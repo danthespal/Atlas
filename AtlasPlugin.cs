@@ -28,6 +28,12 @@ namespace OriathHub.Plugins.Atlas
         /// <inheritdoc />
         public override string Description => "Draws labels and biome borders on the endgame atlas map. Supports named map groups, search, and filtering.";
 
+        /// <inheritdoc />
+        public override string Author => "OriathHub";
+
+        /// <inheritdoc />
+        public override string Version => "1.0.0";
+
         private AtlasSettings settings = new();
         private readonly Dictionary<byte, BiomeInfo> biomes = new();
         private IntPtr lockedRouteStartAddress = IntPtr.Zero;
@@ -114,9 +120,6 @@ namespace OriathHub.Plugins.Atlas
 
             ImGui.SeparatorText("GPS");
             this.DrawGpsSettings();
-
-            ImGui.SeparatorText("Map Groups");
-            this.DrawMapGroupsControls();
         }
 
         private void DrawMapGroupsControls()
@@ -261,6 +264,14 @@ namespace OriathHub.Plugins.Atlas
             ColorSwatch("##rcol", ref this.settings.SearchRouteColor);
             ImGui.SameLine();
             ImGui.Text("Route Colour");
+
+            ImGui.Checkbox("Show Direction Arrows", ref this.settings.ShowRouteArrows);
+            ImGui.SameLine();
+            ImGui.Checkbox("Show Step Numbers", ref this.settings.ShowRouteStepNumbers);
+
+            ColorSwatch("##destcol", ref this.settings.RouteDestinationColor);
+            ImGui.SameLine();
+            ImGui.Text("Destination Colour");
 
             ImGui.SetNextItemWidth(150);
             ImGui.SliderInt("Max Hops##maxhops", ref this.settings.RouteMaxHops, 0, 30);
@@ -410,6 +421,11 @@ namespace OriathHub.Plugins.Atlas
         {
             this.EnsureBiomesLoaded();
 
+            if (ImGui.CollapsingHeader("Map Groups"))
+            {
+                this.DrawMapGroupsControls();
+            }
+
             if (ImGui.CollapsingHeader("Layout"))
             {
                 this.DrawLayoutControls();
@@ -506,9 +522,8 @@ namespace OriathHub.Plugins.Atlas
             new SettingSearchEntry("GPS", "GPS Route Settings", this.DrawGpsSettings,
                 "gps route search path hops runnable prefer avoid content map types weight penalty reduction thickness colour"),
 
-            new SettingSearchEntry("Map Groups", "Map Groups", this.DrawMapGroupsControls,
+            new SettingSearchEntry("Advanced / Map Groups", "Map Groups", this.DrawMapGroupsControls,
                 "map groups add rename delete background font color"),
-
             new SettingSearchEntry("Advanced / Layout", "Layout", this.DrawLayoutControls,
                 "label nudge scale multiplier offset position"),
             new SettingSearchEntry("Advanced / Biome Colours", "Biome Colours", this.DrawBiomeColoursControls,
@@ -694,7 +709,7 @@ namespace OriathHub.Plugins.Atlas
             this.DrawRouteStartLockButton(markerDrawList, start);
 
             var paths = this.FindShortestPaths(start, targets, connections);
-            var endMarkerColor = ImGuiHelper.Color(new Vector4(1f, 0.05f, 0.05f, 1f));
+            var endMarkerColor = ImGuiHelper.Color(this.settings.RouteDestinationColor);
             var drawnEnds = new HashSet<AtlasMapsNodeUiElement>();
             var drawnNumbers = new HashSet<AtlasMapsNodeUiElement>();
 
@@ -709,7 +724,7 @@ namespace OriathHub.Plugins.Atlas
                 }
 
                 if (path.Count > 0 && drawnEnds.Add(path[^1]))
-                    DrawRouteEndMarker(markerDrawList, NodeCenter(path[^1]), endMarkerColor);
+                    this.DrawRouteEndMarker(markerDrawList, path[^1], endMarkerColor);
 
                 // Number each non-completed node in path order so the user knows the run sequence.
                 // Completed maps are skipped and do not consume a step number.
@@ -718,7 +733,7 @@ namespace OriathHub.Plugins.Atlas
                 {
                     if (node.IsCompleted)
                         continue;
-                    if (drawnNumbers.Add(node))
+                    if (this.settings.ShowRouteStepNumbers && drawnNumbers.Add(node))
                         DrawRouteNodeNumber(markerDrawList, NodeCenter(node), stepNumber);
                     stepNumber++;
                 }
@@ -726,7 +741,7 @@ namespace OriathHub.Plugins.Atlas
 
             foreach (var target in targets.Where(t => !drawnEnds.Contains(t)))
             {
-                DrawRouteEndMarker(markerDrawList, NodeCenter(target), endMarkerColor);
+                this.DrawRouteEndMarker(markerDrawList, target, endMarkerColor);
             }
         }
 
@@ -853,13 +868,48 @@ namespace OriathHub.Plugins.Atlas
             if (!OnScreen(from, display) && !OnScreen(to, display))
                 return;
 
-            if (!dotted)
-            {
+            if (dotted)
+                DrawDottedLine(drawList, from, to, color, this.settings.SearchRouteThickness);
+            else
                 drawList.AddLine(from, to, color, this.settings.SearchRouteThickness);
-                return;
-            }
 
-            DrawDottedLine(drawList, from, to, color, this.settings.SearchRouteThickness);
+            if (this.settings.ShowRouteArrows)
+                DrawDirectionArrows(drawList, from, to, color, this.settings.SearchRouteThickness);
+        }
+
+        // Draws small chevrons along a segment pointing toward the destination. They are spaced out and
+        // kept clear of both node endpoints (so they never crowd the markers/step numbers) and use the
+        // route colour, staying minimalist and unobtrusive.
+        private static void DrawDirectionArrows(ImDrawListPtr drawList, Vector2 from, Vector2 to, uint color, float thickness)
+        {
+            const float endMargin = 24f; // keep chevrons away from the node markers at each end
+            const float spacing = 52f;   // distance between consecutive chevrons
+
+            // Scale the chevron with the route thickness so it stays clearly readable at thicker lines.
+            var wing = Math.Max(9f, thickness * 2.6f);
+
+            var delta = to - from;
+            var length = delta.Length();
+            var usable = length - (2f * endMargin);
+            if (usable <= 0f)
+                return;
+
+            var direction = delta / length;
+            var perp = new Vector2(-direction.Y, direction.X);
+            var arrowThickness = Math.Max(1.5f, thickness);
+
+            // Centre the chevrons within the usable span so they sit evenly between the two nodes.
+            var count = (int)(usable / spacing) + 1;
+            var start = endMargin + ((usable - ((count - 1) * spacing)) * 0.5f);
+
+            for (var i = 0; i < count; i++)
+            {
+                var p = from + (direction * (start + (i * spacing)));
+                var tip = p + (direction * wing);
+                var back = p - (direction * wing);
+                drawList.AddLine(back + (perp * wing), tip, color, arrowThickness);
+                drawList.AddLine(back - (perp * wing), tip, color, arrowThickness);
+            }
         }
 
         private static void DrawDottedLine(ImDrawListPtr drawList, Vector2 from, Vector2 to, uint color, float thickness)
@@ -983,11 +1033,35 @@ namespace OriathHub.Plugins.Atlas
                 drawList.AddCircle(center, 13f, color, 16, 2f);
         }
 
-        private static void DrawRouteEndMarker(ImDrawListPtr drawList, Vector2 center, uint color)
+        // Highlights the destination with corner brackets around its map-name label rather than a filled
+        // dot at the node centre, so the map name and its group/biome colours stay fully readable. The
+        // brackets mark the destination by shape (a target reticle), so they stand out on any map colour.
+        // The box geometry mirrors the label loop (centre, text size, padding, nudge).
+        private void DrawRouteEndMarker(ImDrawListPtr drawList, AtlasMapsNodeUiElement node, uint color)
         {
-            const float radius = 6f;
-            drawList.AddCircleFilled(center, radius, color);
-            drawList.AddCircle(center, radius + 3f, color, 16, 2f);
+            var mapName = NormalizeName(node.MapName);
+            var textSize = string.IsNullOrWhiteSpace(mapName)
+                ? new Vector2(24f, ImGui.GetTextLineHeight())
+                : ImGui.CalcTextSize(mapName);
+
+            var drawPos = NodeCenter(node) - (textSize * 0.5f) + this.settings.AnchorNudge;
+            var pad = new Vector2(5f, 2f);
+            var gap = new Vector2(3f, 3f); // sit just outside the label's own background box
+            var min = drawPos - pad - gap;
+            var max = drawPos + textSize + pad + gap;
+
+            const float arm = 9f;        // length of each bracket leg
+            const float thickness = 2.5f;
+
+            // Top-left, top-right, bottom-left, bottom-right L-shaped corners.
+            drawList.AddLine(min, new Vector2(min.X + arm, min.Y), color, thickness);
+            drawList.AddLine(min, new Vector2(min.X, min.Y + arm), color, thickness);
+            drawList.AddLine(new Vector2(max.X, min.Y), new Vector2(max.X - arm, min.Y), color, thickness);
+            drawList.AddLine(new Vector2(max.X, min.Y), new Vector2(max.X, min.Y + arm), color, thickness);
+            drawList.AddLine(new Vector2(min.X, max.Y), new Vector2(min.X + arm, max.Y), color, thickness);
+            drawList.AddLine(new Vector2(min.X, max.Y), new Vector2(min.X, max.Y - arm), color, thickness);
+            drawList.AddLine(max, new Vector2(max.X - arm, max.Y), color, thickness);
+            drawList.AddLine(max, new Vector2(max.X, max.Y - arm), color, thickness);
         }
 
         private static void DrawRouteNodeNumber(ImDrawListPtr drawList, Vector2 center, int number)

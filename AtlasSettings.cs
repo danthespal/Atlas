@@ -60,6 +60,15 @@ namespace OriathHub.Plugins.Atlas
         /// <summary>Thickness of the search route line in pixels.</summary>
         public float SearchRouteThickness = 4f;
 
+        /// <summary>Draw directional chevrons along the search route line.</summary>
+        public bool ShowRouteArrows = true;
+
+        /// <summary>Colour of the destination highlight brackets. Distinct from red so it doesn't clash with red map/biome colours.</summary>
+        public Vector4 RouteDestinationColor = new(0.2f, 0.88f, 1f, 1f);
+
+        /// <summary>Draw the step number on each node along the search route.</summary>
+        public bool ShowRouteStepNumbers = true;
+
         // ── GPS routing weights ────────────────────────────────────────────────────
 
         /// <summary>Content types to prefer as intermediate waypoints; nodes with matching content get reduced edge cost.</summary>
